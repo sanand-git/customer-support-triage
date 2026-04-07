@@ -1,0 +1,108 @@
+"""
+FastAPI server exposing the OpenEnv HTTP interface for the
+Customer Support Ticket Triage environment.
+"""
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+import uvicorn
+
+from environment import TicketTriageEnv, Action, Observation, Reward
+
+app = FastAPI(
+    title="Customer Support Ticket Triage — OpenEnv",
+    description="An OpenEnv environment where agents learn to triage customer support tickets.",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# One env instance per task (for simplicity in single-user HF Space)
+_envs: Dict[str, TicketTriageEnv] = {
+    "easy": TicketTriageEnv("easy"),
+    "medium": TicketTriageEnv("medium"),
+    "hard": TicketTriageEnv("hard"),
+}
+
+
+def _get_env(task_id: str) -> TicketTriageEnv:
+    if task_id not in _envs:
+        raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'. Use: easy, medium, hard")
+    return _envs[task_id]
+
+
+# ─── Endpoints ────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def root():
+    return {
+        "name": "customer-support-triage",
+        "version": "1.0.0",
+        "tasks": ["easy", "medium", "hard"],
+        "spec": "openenv-v1",
+        "description": "AI agent environment for customer support ticket triage"
+    }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/reset")
+def reset(task_id: str = "easy"):
+    env = _get_env(task_id)
+    obs = env.reset()
+    return obs.model_dump()
+
+
+@app.post("/step")
+def step(action: Action, task_id: str = "easy"):
+    env = _get_env(task_id)
+    try:
+        obs, reward, done, info = env.step(action)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "observation": obs.model_dump(),
+        "reward": reward.model_dump(),
+        "done": done,
+        "info": info,
+    }
+
+
+@app.get("/state")
+def state(task_id: str = "easy"):
+    env = _get_env(task_id)
+    return env.state()
+
+
+@app.get("/grade")
+def grade(task_id: str = "easy"):
+    env = _get_env(task_id)
+    score = env.grade()
+    return {"task_id": task_id, "score": score}
+
+
+@app.get("/tasks")
+def list_tasks():
+    from environment import TASK_CONFIGS
+    return {
+        tid: {
+            "description": cfg["description"],
+            "max_steps": cfg["max_steps"],
+            "num_tickets": len(cfg["tickets"]),
+        }
+        for tid, cfg in TASK_CONFIGS.items()
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=7860, reload=False)

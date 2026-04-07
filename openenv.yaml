@@ -1,0 +1,82 @@
+name: customer-support-triage
+version: "1.0.0"
+description: >
+  An OpenEnv environment where AI agents learn to triage customer support tickets.
+  Agents must correctly categorize, prioritize, route, and respond to tickets
+  across three difficulty levels — simulating a real-world support workflow.
+
+author: openenv-submission
+license: MIT
+tags:
+  - openenv
+  - customer-support
+  - nlp
+  - triage
+  - real-world
+
+tasks:
+  - id: easy
+    description: Categorize and handle simple, unambiguous support tickets
+    difficulty: easy
+    max_steps: 5
+    reward_range: [0.0, 1.0]
+
+  - id: medium
+    description: Handle tickets requiring correct escalation and priority judgment
+    difficulty: medium
+    max_steps: 8
+    reward_range: [0.0, 1.0]
+
+  - id: hard
+    description: >
+      Manage high-stakes enterprise tickets requiring correct triage, escalation,
+      and quality written responses covering required topics
+    difficulty: hard
+    max_steps: 12
+    reward_range: [0.0, 1.0]
+
+observation_space:
+  type: object
+  fields:
+    ticket_id: string
+    subject: string
+    body: string
+    sender_email: string
+    sender_tier: "enum[free, pro, enterprise]"
+    created_at: string
+    previous_messages: "list[object]"
+    queue_size: integer
+    task_id: string
+    step_number: integer
+    done: boolean
+
+action_space:
+  type: object
+  fields:
+    action_type: "enum[categorize, prioritize, respond, escalate, close]"
+    category: "optional enum[billing, technical, account, feature_request, spam]"
+    priority: "optional enum[low, medium, high, urgent]"
+    response_text: optional string
+    escalate_to: "optional enum[tier2, billing_team, engineering]"
+    close_reason: "optional enum[resolved, spam, duplicate]"
+
+reward:
+  type: float
+  range: [0.0, 1.0]
+  shaped: true
+  description: >
+    Per-step rewards for each action taken. Category correctness, priority accuracy
+    (graded by distance), escalation correctness, response topic coverage.
+
+endpoints:
+  reset: POST /reset?task_id={task_id}
+  step: POST /step?task_id={task_id}
+  state: GET /state?task_id={task_id}
+  grade: GET /grade?task_id={task_id}
+  tasks: GET /tasks
+  health: GET /health
+
+baseline_scores:
+  easy: 0.72
+  medium: 0.61
+  hard: 0.48
