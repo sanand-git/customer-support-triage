@@ -398,29 +398,30 @@ class TicketTriageEnv:
         gt = s["ticket"]["ground_truth"]
         scores = []
 
-        # Category score
+        # Category score - strictly between 0 and 1
         if s["category_set"] is not None:
-            scores.append(1.0 if s["category_set"] == gt["category"] else 0.0)
+            scores.append(0.95 if s["category_set"] == gt["category"] else 0.05)
         else:
-            scores.append(0.0)
+            scores.append(0.05)
 
         # Priority score
         if s["priority_set"] is not None:
             pm = {"low": 0, "medium": 1, "high": 2, "urgent": 3}
             dist = abs(pm.get(s["priority_set"], -1) - pm.get(gt["priority"], -1))
-            scores.append(max(0.0, 1.0 - dist * 0.35))
+            raw = max(0.05, 0.95 - dist * 0.30)
+            scores.append(raw)
         else:
-            scores.append(0.0)
+            scores.append(0.05)
 
         # Escalation score
         should_esc = gt.get("requires_escalation", False)
         if should_esc:
             if s["escalated"]:
-                scores.append(1.0 if s["escalate_to"] == gt.get("escalate_to") else 0.5)
+                scores.append(0.95 if s["escalate_to"] == gt.get("escalate_to") else 0.5)
             else:
-                scores.append(0.0)
+                scores.append(0.05)
         else:
-            scores.append(0.0 if s["escalated"] else 1.0)
+            scores.append(0.05 if s["escalated"] else 0.95)
 
         # Response score (hard task)
         if self.task_id == "hard":
@@ -428,11 +429,13 @@ class TicketTriageEnv:
             if required and s["responded"]:
                 text = s["response_text"].lower()
                 hits = sum(1 for kw in required if kw in text)
-                scores.append(hits / len(required))
+                raw = hits / len(required)
+                scores.append(max(0.05, min(0.95, raw)))
             elif required and not s["responded"]:
-                scores.append(0.0)
+                scores.append(0.05)
             else:
-                scores.append(1.0)
+                scores.append(0.85)
 
-        final = sum(scores) / len(scores) if scores else 0.0
+        final = sum(scores) / len(scores) if scores else 0.05
+        final = max(0.01, min(0.99, final))
         return round(final, 4)
