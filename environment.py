@@ -319,7 +319,7 @@ class TicketTriageEnv:
         # ── Category reward ────────────────────────────────────────────────
         if action.action_type == "categorize":
             correct = action.category == gt["category"]
-            breakdown["category"] = 1.0 if correct else 0.0
+            breakdown["category"] = 0.95 if correct else 0.05
             messages.append(f"Category {'correct' if correct else 'wrong'}: got {action.category}, expected {gt['category']}")
 
         # ── Priority reward ────────────────────────────────────────────────
@@ -338,10 +338,10 @@ class TicketTriageEnv:
             correct_team = gt.get("escalate_to", None)
             if should_escalate:
                 team_score = 1.0 if action.escalate_to == correct_team else 0.4
-                breakdown["escalation"] = team_score
+                breakdown["escalation"] = min(0.95, team_score)
                 messages.append(f"Escalation correct, team score {team_score:.2f}")
             else:
-                breakdown["escalation"] = 0.0  # Penalize unnecessary escalation
+                breakdown["escalation"] = 0.05  # Penalize unnecessary escalation
                 messages.append("Unnecessary escalation — penalized")
 
         # ── Response quality reward ────────────────────────────────────────
@@ -365,19 +365,19 @@ class TicketTriageEnv:
             should_close = gt.get("should_close", False)
             if should_close:
                 correct_reason = action.close_reason == ("spam" if gt["category"] == "spam" else "resolved")
-                breakdown["close"] = 1.0 if correct_reason else 0.6
+                breakdown["close"] = 0.95 if correct_reason else 0.6
                 messages.append(f"Close correct, reason {'correct' if correct_reason else 'suboptimal'}")
             else:
-                breakdown["close"] = 0.0
+                breakdown["close"] = 0.05
                 messages.append("Premature close — ticket should not be closed yet")
 
         else:
-            breakdown["unknown"] = 0.0
+            breakdown["unknown"] = 0.05
             messages.append(f"Unknown action type: {action.action_type}")
 
         # Weighted aggregate
         total = sum(breakdown[k] * weights.get(k, 0.1) for k in breakdown)
-        total = min(1.0, max(0.0, total))
+        total = min(0.99, max(0.01, total))
         s["cumulative_reward"] += total
 
         reward = Reward(
@@ -437,5 +437,5 @@ class TicketTriageEnv:
                 scores.append(0.85)
 
         final = sum(scores) / len(scores) if scores else 0.05
-        final = max(0.01, min(0.99, final))
+        final = max(0.1, min(0.9, final))
         return round(final, 4)
