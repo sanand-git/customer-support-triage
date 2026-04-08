@@ -1,13 +1,10 @@
 """
 inference.py — Baseline inference script for Customer Support Ticket Triage OpenEnv.
 
-Uses OpenAI-compatible client to run an LLM agent against all 3 tasks.
-Emits structured [START] / [STEP] / [END] logs for evaluation.
-
 Environment variables:
-  API_BASE_URL  — LLM API base URL (e.g. https://api.openai.com/v1)
-  MODEL_NAME    — Model identifier (e.g. gpt-4o-mini)
-  HF_TOKEN      — API key used as bearer token
+  API_BASE_URL  — LLM API base URL
+  MODEL_NAME    — Model identifier
+  HF_TOKEN      — API key
 """
 
 import os
@@ -18,7 +15,6 @@ import sys
 try:
     from openai import OpenAI
 except ImportError:
-    print("Installing openai...", file=sys.stderr)
     import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "openai"])
     from openai import OpenAI
@@ -35,11 +31,11 @@ MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 
 if not HF_TOKEN:
-    print(json.dumps({
-        "event": "ERROR",
-        "message": "HF_TOKEN environment variable not set.",
-        "timestamp": time.time()
-    }))
+    print("[START]")
+    print(json.dumps({"task_id": "none", "error": "HF_TOKEN not set"}))
+    print("[END]")
+    print(json.dumps({"task_id": "none", "score": 0.0, "total_reward": 0.0}))
+    sys.stdout.flush()
     sys.exit(1)
 
 client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
@@ -98,20 +94,13 @@ def call_llm(messages: list) -> str:
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        # Return a safe fallback action on any API error
-        print(json.dumps({
-            "event": "LLM_ERROR",
-            "error": str(e),
-            "timestamp": time.time()
-        }), file=sys.stderr)
+        print(f"LLM_ERROR: {str(e)}", file=sys.stderr)
         return '{"action_type": "categorize", "category": "technical"}'
 
 
 def parse_action(raw: str) -> Action:
-    """Parse LLM output into an Action, with fallback."""
     try:
         clean = raw.strip()
-        # Strip markdown fences if present
         if "```" in clean:
             clean = clean.split("```")[1]
             if clean.startswith("json"):
@@ -129,16 +118,14 @@ def run_task(task_id: str) -> dict:
         obs = env.reset()
         obs_dict = obs.model_dump()
     except Exception as e:
-        print(json.dumps({
-            "event": "ENV_ERROR",
-            "task_id": task_id,
-            "error": str(e),
-            "timestamp": time.time()
-        }))
+        print("[START]")
+        print(json.dumps({"task_id": task_id, "error": str(e)}))
+        print("[END]")
+        print(json.dumps({"task_id": task_id, "score": 0.0, "total_reward": 0.0}))
+        sys.stdout.flush()
         return {"task_id": task_id, "steps": [], "total_reward": 0.0, "final_score": 0.0}
 
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
-
     task_result = {
         "task_id": task_id,
         "steps": [],
@@ -146,8 +133,9 @@ def run_task(task_id: str) -> dict:
         "final_score": 0.0,
     }
 
+    # ── [START] block ──────────────────────────────────────────────────────────
+    print("[START]")
     print(json.dumps({
-        "event": "START",
         "task_id": task_id,
         "ticket_id": obs_dict["ticket_id"],
         "subject": obs_dict["subject"],
@@ -169,8 +157,9 @@ def run_task(task_id: str) -> dict:
             obs, reward, done, info = env.step(action)
             obs_dict = obs.model_dump()
 
-            step_log = {
-                "event": "STEP",
+            # ── [STEP] block ───────────────────────────────────────────────────
+            print("[STEP]")
+            print(json.dumps({
                 "task_id": task_id,
                 "step": step_num,
                 "action": action.model_dump(),
@@ -180,23 +169,29 @@ def run_task(task_id: str) -> dict:
                 "done": done,
                 "cumulative_reward": info["cumulative_reward"],
                 "timestamp": time.time(),
-            }
-            print(json.dumps(step_log))
+            }))
             sys.stdout.flush()
 
-            task_result["steps"].append(step_log)
+            task_result["steps"].append({
+                "step": step_num,
+                "action": action.model_dump(),
+                "reward": reward.value,
+                "done": done,
+            })
             task_result["total_reward"] += reward.value
 
             if done:
                 break
 
         except Exception as e:
+            print("[STEP]")
             print(json.dumps({
-                "event": "STEP_ERROR",
                 "task_id": task_id,
                 "step": step_num,
                 "error": str(e),
-                "timestamp": time.time()
+                "reward": 0.0,
+                "done": True,
+                "timestamp": time.time(),
             }))
             sys.stdout.flush()
             break
@@ -208,8 +203,9 @@ def run_task(task_id: str) -> dict:
 
     task_result["final_score"] = final_score
 
+    # ── [END] block ────────────────────────────────────────────────────────────
+    print("[END]")
     print(json.dumps({
-        "event": "END",
         "task_id": task_id,
         "total_steps": len(task_result["steps"]),
         "total_reward": round(task_result["total_reward"], 4),
@@ -228,12 +224,10 @@ def main():
             result = run_task(task_id)
             all_results.append(result)
         except Exception as e:
-            print(json.dumps({
-                "event": "TASK_ERROR",
-                "task_id": task_id,
-                "error": str(e),
-                "timestamp": time.time()
-            }))
+            print("[START]")
+            print(json.dumps({"task_id": task_id, "error": str(e)}))
+            print("[END]")
+            print(json.dumps({"task_id": task_id, "score": 0.0, "total_reward": 0.0}))
             sys.stdout.flush()
             all_results.append({"task_id": task_id, "final_score": 0.0})
         time.sleep(1)
