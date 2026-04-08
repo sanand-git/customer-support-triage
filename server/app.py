@@ -1,6 +1,5 @@
 """
 server/app.py — Required entry point for OpenEnv multi-mode deployment.
-This re-exports the main FastAPI app.
 """
 
 from fastapi import FastAPI, HTTPException
@@ -8,12 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any
 import sys
 import os
+import uvicorn
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from environment import TicketTriageEnv, Action, TASK_CONFIGS
-from datetime import datetime
 
 app = FastAPI(
     title="Customer Support Ticket Triage — OpenEnv",
@@ -104,6 +103,9 @@ def list_tasks():
     }
 
 
-if __name__ == "__main__":
-    import uvicorn
+def main():
     uvicorn.run("server.app:app", host="0.0.0.0", port=7860, reload=False)
+
+
+if __name__ == "__main__":
+    main()
