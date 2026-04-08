@@ -19,13 +19,13 @@ tasks:
     description: Categorize and handle simple, unambiguous support tickets
     difficulty: easy
     max_steps: 5
-    reward_range: [0.0, 1.0]
+    reward_range: [0.01, 0.99]
 
   - id: medium
     description: Handle tickets requiring correct escalation and priority judgment
     difficulty: medium
     max_steps: 8
-    reward_range: [0.0, 1.0]
+    reward_range: [0.01, 0.99]
 
   - id: hard
     description: >
@@ -33,7 +33,7 @@ tasks:
       and quality written responses covering required topics
     difficulty: hard
     max_steps: 12
-    reward_range: [0.0, 1.0]
+    reward_range: [0.01, 0.99]
 
 observation_space:
   type: object
@@ -62,11 +62,12 @@ action_space:
 
 reward:
   type: float
-  range: [0.0, 1.0]
+  range: [0.01, 0.99]
   shaped: true
   description: >
-    Per-step rewards for each action taken. Category correctness, priority accuracy
-    (graded by distance), escalation correctness, response topic coverage.
+    Per-step rewards for each action taken. All scores strictly between 0.01 and 0.99.
+    Category correctness, priority accuracy (graded by distance),
+    escalation correctness, response topic coverage.
 
 endpoints:
   reset: POST /reset?task_id={task_id}
@@ -77,6 +78,6 @@ endpoints:
   health: GET /health
 
 baseline_scores:
-  easy: 0.72
-  medium: 0.61
-  hard: 0.48
+  easy: 0.55
+  medium: 0.48
+  hard: 0.35
