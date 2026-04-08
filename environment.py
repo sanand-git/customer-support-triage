@@ -4,10 +4,15 @@ OpenEnv-compliant environment for AI agent training and evaluation.
 """
 
 import random
-import json
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from datetime import datetime
+
+
+def clamp(v: float) -> float:
+    """Ensure value is strictly between 0 and 1."""
+    return round(max(0.01, min(0.99, float(v))), 4)
+
 
 # ─── Pydantic Models ──────────────────────────────────────────────────────────
 
@@ -16,7 +21,7 @@ class Observation(BaseModel):
     subject: str
     body: str
     sender_email: str
-    sender_tier: str  # "free" | "pro" | "enterprise"
+    sender_tier: str
     created_at: str
     previous_messages: List[Dict[str, str]] = Field(default_factory=list)
     queue_size: int
@@ -25,15 +30,15 @@ class Observation(BaseModel):
     done: bool = False
 
 class Action(BaseModel):
-    action_type: str  # "categorize" | "prioritize" | "respond" | "escalate" | "close"
-    category: Optional[str] = None       # "billing" | "technical" | "account" | "feature_request" | "spam"
-    priority: Optional[str] = None      # "low" | "medium" | "high" | "urgent"
+    action_type: str
+    category: Optional[str] = None
+    priority: Optional[str] = None
     response_text: Optional[str] = None
-    escalate_to: Optional[str] = None   # "tier2" | "billing_team" | "engineering"
-    close_reason: Optional[str] = None  # "resolved" | "spam" | "duplicate"
+    escalate_to: Optional[str] = None
+    close_reason: Optional[str] = None
 
 class Reward(BaseModel):
-    value: float = Field(ge=0.01, le=0.99)
+    value: float
     breakdown: Dict[str, float]
     message: str
 
@@ -198,24 +203,14 @@ TASK_CONFIGS = {
 # ─── Environment ──────────────────────────────────────────────────────────────
 
 class TicketTriageEnv:
-    """
-    OpenEnv-compliant Customer Support Ticket Triage Environment.
-    
-    The agent must correctly categorize, prioritize, respond to, and route
-    support tickets — simulating a real customer support workflow.
-    """
-
     def __init__(self, task_id: str = "easy"):
-        assert task_id in TASK_CONFIGS, f"task_id must be one of {list(TASK_CONFIGS.keys())}"
+        assert task_id in TASK_CONFIGS
         self.task_id = task_id
         self.config = TASK_CONFIGS[task_id]
         self._state: Dict[str, Any] = {}
         self.reset()
 
-    # ── Core API ──────────────────────────────────────────────────────────────
-
     def reset(self) -> Observation:
-        """Reset environment, pick a random ticket for this task."""
         ticket = random.choice(self.config["tickets"])
         self._state = {
             "task_id": self.task_id,
@@ -232,12 +227,11 @@ class TicketTriageEnv:
             "closed": False,
             "close_reason": None,
             "queue_size": random.randint(10, 50),
-            "cumulative_reward": 0.0,
+            "cumulative_reward": 0.5,  # Start at neutral, not 0.0
         }
         return self._make_observation()
 
-    def step(self, action: Action) -> tuple[Observation, Reward, bool, Dict]:
-        """Process one agent action and return next observation, reward, done, info."""
+    def step(self, action: Action):
         if self._state["done"]:
             raise RuntimeError("Episode is done. Call reset() first.")
 
@@ -254,15 +248,12 @@ class TicketTriageEnv:
         info = {
             "step": self._state["step_number"],
             "actions_taken": len(self._state["actions_taken"]),
-            "cumulative_reward": self._state["cumulative_reward"],
+            "cumulative_reward": clamp(self._state["cumulative_reward"]),
         }
         return obs, reward, done, info
 
     def state(self) -> Dict[str, Any]:
-        """Return full internal state (for debugging / logging)."""
         return dict(self._state)
-
-    # ── Internal Helpers ──────────────────────────────────────────────────────
 
     def _make_observation(self) -> Observation:
         s = self._state
@@ -302,7 +293,6 @@ class TicketTriageEnv:
         if s["step_number"] >= self.config["max_steps"]:
             return True
         gt = s["ticket"]["ground_truth"]
-        # Episode ends when ticket is closed or escalated (final action)
         if s["closed"] or (s["escalated"] and not gt.get("requires_response", False)):
             return True
         if s["escalated"] and s["responded"]:
@@ -316,112 +306,94 @@ class TicketTriageEnv:
         breakdown = {}
         messages = []
 
-        # ── Category reward ────────────────────────────────────────────────
         if action.action_type == "categorize":
             correct = action.category == gt["category"]
-            breakdown["category"] = 0.95 if correct else 0.05
-            messages.append(f"Category {'correct' if correct else 'wrong'}: got {action.category}, expected {gt['category']}")
+            breakdown["category"] = 0.92 if correct else 0.08
+            messages.append(f"Category {'correct' if correct else 'wrong'}")
 
-        # ── Priority reward ────────────────────────────────────────────────
         elif action.action_type == "prioritize":
-            priority_map = {"low": 0, "medium": 1, "high": 2, "urgent": 3}
-            got = priority_map.get(action.priority, -1)
-            exp = priority_map.get(gt["priority"], -1)
+            pm = {"low": 0, "medium": 1, "high": 2, "urgent": 3}
+            got = pm.get(action.priority, -1)
+            exp = pm.get(gt["priority"], -1)
             dist = abs(got - exp)
-            score = max(0.05, min(0.95, 0.95 - dist * 0.30))
+            score = clamp(0.92 - dist * 0.28)
             breakdown["priority"] = score
-            messages.append(f"Priority score {score:.2f}: got {action.priority}, expected {gt['priority']}")
+            messages.append(f"Priority score {score:.2f}")
 
-        # ── Escalation reward ──────────────────────────────────────────────
         elif action.action_type == "escalate":
             should_escalate = gt.get("requires_escalation", False)
             correct_team = gt.get("escalate_to", None)
             if should_escalate:
-                team_score = 0.95 if action.escalate_to == correct_team else 0.4
-                breakdown["escalation"] = min(0.95, team_score)
+                team_score = 0.92 if action.escalate_to == correct_team else 0.45
+                breakdown["escalation"] = clamp(team_score)
                 messages.append(f"Escalation correct, team score {team_score:.2f}")
             else:
-                breakdown["escalation"] = 0.05  # Penalize unnecessary escalation
-                messages.append("Unnecessary escalation — penalized")
+                breakdown["escalation"] = 0.08
+                messages.append("Unnecessary escalation")
 
-        # ── Response quality reward ────────────────────────────────────────
         elif action.action_type == "respond":
-            if not gt.get("requires_response", False) and self.task_id != "hard":
-                breakdown["response"] = 0.5  # Neutral for unsolicited responses
-                messages.append("Response sent (not required for this ticket)")
+            text = (action.response_text or "").lower()
+            required_topics = gt.get("response_must_include", [])
+            if required_topics:
+                hits = sum(1 for kw in required_topics if kw in text)
+                score = clamp(0.08 + (hits / len(required_topics)) * 0.84)
             else:
-                text = (action.response_text or "").lower()
-                required_topics = gt.get("response_must_include", [])
-                if required_topics:
-                    hits = sum(1 for kw in required_topics if kw in text)
-                    score = max(0.05, hits / len(required_topics)) if hits > 0 else 0.05
-                else:
-                    score = 0.7 if len(text) > 50 else 0.3
-                breakdown["response"] = score
-                messages.append(f"Response quality score {score:.2f} ({hits if required_topics else 'N/A'}/{len(required_topics) if required_topics else 'N/A'} key topics)")
+                score = 0.65 if len(text) > 50 else 0.35
+            breakdown["response"] = clamp(score)
+            messages.append(f"Response quality score {score:.2f}")
 
-        # ── Close reward ───────────────────────────────────────────────────
         elif action.action_type == "close":
             should_close = gt.get("should_close", False)
             if should_close:
                 correct_reason = action.close_reason == ("spam" if gt["category"] == "spam" else "resolved")
-                breakdown["close"] = 0.95 if correct_reason else 0.6
-                messages.append(f"Close correct, reason {'correct' if correct_reason else 'suboptimal'}")
+                breakdown["close"] = 0.92 if correct_reason else 0.55
+                messages.append(f"Close {'correct' if correct_reason else 'suboptimal'}")
             else:
-                breakdown["close"] = 0.05
-                messages.append("Premature close — ticket should not be closed yet")
+                breakdown["close"] = 0.08
+                messages.append("Premature close")
 
         else:
-            breakdown["unknown"] = 0.05
-            messages.append(f"Unknown action type: {action.action_type}")
+            breakdown["unknown"] = 0.08
+            messages.append(f"Unknown action: {action.action_type}")
 
-        # Weighted aggregate
         total = sum(breakdown[k] * weights.get(k, 0.1) for k in breakdown)
-        total = min(0.99, max(0.01, total))
-        s["cumulative_reward"] += total
+        total = clamp(total)
+        s["cumulative_reward"] = clamp(s["cumulative_reward"] * 0.9 + total * 0.1)
 
-        reward = Reward(
-            value=round(total, 4),
-            breakdown=breakdown,
+        return Reward(
+            value=total,
+            breakdown={k: clamp(v) for k, v in breakdown.items()},
             message=" | ".join(messages)
         )
-        return reward
-
-    # ── Grader (final episode score) ──────────────────────────────────────────
 
     def grade(self) -> float:
-        """
-        Final episode grader. Returns a score 0.0–1.0 based on all actions taken.
-        Called at episode end for task evaluation.
-        """
         s = self._state
         gt = s["ticket"]["ground_truth"]
         scores = []
 
-        # Category score - strictly between 0 and 1
+        # Category score
         if s["category_set"] is not None:
-            scores.append(0.95 if s["category_set"] == gt["category"] else 0.05)
+            scores.append(0.92 if s["category_set"] == gt["category"] else 0.08)
         else:
-            scores.append(0.05)
+            scores.append(0.08)
 
         # Priority score
         if s["priority_set"] is not None:
             pm = {"low": 0, "medium": 1, "high": 2, "urgent": 3}
             dist = abs(pm.get(s["priority_set"], -1) - pm.get(gt["priority"], -1))
-            raw = max(0.05, 0.95 - dist * 0.30)
-            scores.append(raw)
+            scores.append(clamp(0.92 - dist * 0.28))
         else:
-            scores.append(0.05)
+            scores.append(0.08)
 
         # Escalation score
         should_esc = gt.get("requires_escalation", False)
         if should_esc:
             if s["escalated"]:
-                scores.append(0.95 if s["escalate_to"] == gt.get("escalate_to") else 0.5)
+                scores.append(0.92 if s["escalate_to"] == gt.get("escalate_to") else 0.45)
             else:
-                scores.append(0.05)
+                scores.append(0.08)
         else:
-            scores.append(0.05 if s["escalated"] else 0.95)
+            scores.append(0.08 if s["escalated"] else 0.92)
 
         # Response score (hard task)
         if self.task_id == "hard":
@@ -429,13 +401,11 @@ class TicketTriageEnv:
             if required and s["responded"]:
                 text = s["response_text"].lower()
                 hits = sum(1 for kw in required if kw in text)
-                raw = hits / len(required)
-                scores.append(max(0.05, min(0.95, raw)))
+                scores.append(clamp(0.08 + (hits / len(required)) * 0.84))
             elif required and not s["responded"]:
-                scores.append(0.05)
+                scores.append(0.08)
             else:
-                scores.append(0.85)
+                scores.append(0.82)
 
-        final = sum(scores) / len(scores) if scores else 0.05
-        final = max(0.1, min(0.9, final))
-        return round(final, 4)
+        final = sum(scores) / len(scores)
+        return clamp(final)
