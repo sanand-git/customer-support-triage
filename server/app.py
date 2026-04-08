@@ -88,6 +88,7 @@ def state(task_id: str = "easy"):
 def grade(task_id: str = "easy"):
     env = _get_env(task_id)
     score = env.grade()
+    score = max(0.01, min(0.99, float(score)))
     return {"task_id": task_id, "score": score}
 
 

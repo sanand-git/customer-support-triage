@@ -5,11 +5,10 @@ Customer Support Ticket Triage environment.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Dict
 import uvicorn
 
-from environment import TicketTriageEnv, Action, Observation, Reward
+from environment import TicketTriageEnv, Action, TASK_CONFIGS
 
 app = FastAPI(
     title="Customer Support Ticket Triage — OpenEnv",
@@ -24,7 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# One env instance per task (for simplicity in single-user HF Space)
 _envs: Dict[str, TicketTriageEnv] = {
     "easy": TicketTriageEnv("easy"),
     "medium": TicketTriageEnv("medium"),
@@ -37,8 +35,6 @@ def _get_env(task_id: str) -> TicketTriageEnv:
         raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'. Use: easy, medium, hard")
     return _envs[task_id]
 
-
-# ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
@@ -88,12 +84,13 @@ def state(task_id: str = "easy"):
 def grade(task_id: str = "easy"):
     env = _get_env(task_id)
     score = env.grade()
+    # Ensure strictly between 0 and 1
+    score = max(0.01, min(0.99, float(score)))
     return {"task_id": task_id, "score": score}
 
 
 @app.get("/tasks")
 def list_tasks():
-    from environment import TASK_CONFIGS
     return {
         tid: {
             "description": cfg["description"],

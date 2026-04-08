@@ -33,7 +33,7 @@ class Action(BaseModel):
     close_reason: Optional[str] = None  # "resolved" | "spam" | "duplicate"
 
 class Reward(BaseModel):
-    value: float = Field(ge=0.0, le=1.0)
+    value: float = Field(ge=0.01, le=0.99)
     breakdown: Dict[str, float]
     message: str
 
@@ -328,7 +328,7 @@ class TicketTriageEnv:
             got = priority_map.get(action.priority, -1)
             exp = priority_map.get(gt["priority"], -1)
             dist = abs(got - exp)
-            score = max(0.0, 1.0 - dist * 0.35)
+            score = max(0.05, min(0.95, 0.95 - dist * 0.30))
             breakdown["priority"] = score
             messages.append(f"Priority score {score:.2f}: got {action.priority}, expected {gt['priority']}")
 
@@ -337,7 +337,7 @@ class TicketTriageEnv:
             should_escalate = gt.get("requires_escalation", False)
             correct_team = gt.get("escalate_to", None)
             if should_escalate:
-                team_score = 1.0 if action.escalate_to == correct_team else 0.4
+                team_score = 0.95 if action.escalate_to == correct_team else 0.4
                 breakdown["escalation"] = min(0.95, team_score)
                 messages.append(f"Escalation correct, team score {team_score:.2f}")
             else:
@@ -354,7 +354,7 @@ class TicketTriageEnv:
                 required_topics = gt.get("response_must_include", [])
                 if required_topics:
                     hits = sum(1 for kw in required_topics if kw in text)
-                    score = hits / len(required_topics)
+                    score = max(0.05, hits / len(required_topics)) if hits > 0 else 0.05
                 else:
                     score = 0.7 if len(text) > 50 else 0.3
                 breakdown["response"] = score
