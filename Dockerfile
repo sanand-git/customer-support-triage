@@ -2,15 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source
-COPY . .
+COPY environment.py .
+COPY app.py .
+COPY openenv.yaml .
+COPY inference.py .
+COPY server/ ./server/
 
-# Expose port for HF Spaces
 EXPOSE 7860
 
-# Start FastAPI server
 CMD ["python", "app.py"]
