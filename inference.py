@@ -7,15 +7,27 @@ Emits structured [START] / [STEP] / [END] logs for evaluation.
 Environment variables:
   API_BASE_URL  — LLM API base URL (e.g. https://api.openai.com/v1)
   MODEL_NAME    — Model identifier (e.g. gpt-4o-mini)
-  HF_TOKEN      — Hugging Face / API key used as bearer token
+  HF_TOKEN      — API key used as bearer token
 """
 
 import os
 import json
 import time
 import sys
-from openai import OpenAI
-from environment import TicketTriageEnv, Action
+
+try:
+    from openai import OpenAI
+except ImportError:
+    print("Installing openai...", file=sys.stderr)
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openai"])
+    from openai import OpenAI
+
+try:
+    from environment import TicketTriageEnv, Action
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from environment import TicketTriageEnv, Action
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
@@ -23,7 +35,11 @@ MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 
 if not HF_TOKEN:
-    print("[ERROR] HF_TOKEN environment variable not set.", file=sys.stderr)
+    print(json.dumps({
+        "event": "ERROR",
+        "message": "HF_TOKEN environment variable not set.",
+        "timestamp": time.time()
+    }))
     sys.exit(1)
 
 client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
@@ -52,15 +68,14 @@ For each ticket you can take ONE of these actions (respond with valid JSON only)
 
 Strategy:
 - First categorize, then prioritize, then decide on response/escalation/close.
-- Enterprise or urgent issues → escalate to the right team.
-- Spam → close immediately.
-- Billing disputes → escalate to billing_team.
-- API/security issues → escalate to engineering.
-- Feature requests → close with resolved after acknowledging.
+- Enterprise or urgent issues escalate to the right team.
+- Spam close immediately.
+- Billing disputes escalate to billing_team.
+- API/security issues escalate to engineering.
+- Feature requests close with resolved after acknowledging.
 - Always respond first to high-stakes tickets before escalating.
 
-Return ONLY valid JSON with no explanation or markdown.
-"""
+Return ONLY valid JSON with no explanation or markdown fences."""
 
 
 def build_user_prompt(obs: dict) -> str:
@@ -74,31 +89,53 @@ Step {obs['step_number']} — What is your next action? Return JSON only."""
 
 
 def call_llm(messages: list) -> str:
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        max_tokens=512,
-        temperature=0.0,
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            max_tokens=512,
+            temperature=0.0,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        # Return a safe fallback action on any API error
+        print(json.dumps({
+            "event": "LLM_ERROR",
+            "error": str(e),
+            "timestamp": time.time()
+        }), file=sys.stderr)
+        return '{"action_type": "categorize", "category": "technical"}'
 
 
 def parse_action(raw: str) -> Action:
     """Parse LLM output into an Action, with fallback."""
     try:
+        clean = raw.strip()
         # Strip markdown fences if present
-        clean = raw.strip().strip("```json").strip("```").strip()
+        if "```" in clean:
+            clean = clean.split("```")[1]
+            if clean.startswith("json"):
+                clean = clean[4:]
+        clean = clean.strip()
         data = json.loads(clean)
         return Action(**data)
     except Exception:
-        # Fallback: categorize as technical
         return Action(action_type="categorize", category="technical")
 
 
 def run_task(task_id: str) -> dict:
-    env = TicketTriageEnv(task_id)
-    obs = env.reset()
-    obs_dict = obs.model_dump()
+    try:
+        env = TicketTriageEnv(task_id)
+        obs = env.reset()
+        obs_dict = obs.model_dump()
+    except Exception as e:
+        print(json.dumps({
+            "event": "ENV_ERROR",
+            "task_id": task_id,
+            "error": str(e),
+            "timestamp": time.time()
+        }))
+        return {"task_id": task_id, "steps": [], "total_reward": 0.0, "final_score": 0.0}
 
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -118,43 +155,57 @@ def run_task(task_id: str) -> dict:
         "model": MODEL_NAME,
         "timestamp": time.time(),
     }))
+    sys.stdout.flush()
 
     for step_num in range(1, MAX_STEPS[task_id] + 1):
-        # Build prompt
-        user_msg = build_user_prompt(obs_dict)
-        conversation.append({"role": "user", "content": user_msg})
+        try:
+            user_msg = build_user_prompt(obs_dict)
+            conversation.append({"role": "user", "content": user_msg})
 
-        # LLM call
-        raw_action = call_llm(conversation)
-        conversation.append({"role": "assistant", "content": raw_action})
+            raw_action = call_llm(conversation)
+            conversation.append({"role": "assistant", "content": raw_action})
 
-        # Parse & execute action
-        action = parse_action(raw_action)
-        obs, reward, done, info = env.step(action)
-        obs_dict = obs.model_dump()
+            action = parse_action(raw_action)
+            obs, reward, done, info = env.step(action)
+            obs_dict = obs.model_dump()
 
-        step_log = {
-            "event": "STEP",
-            "task_id": task_id,
-            "step": step_num,
-            "action": action.model_dump(),
-            "reward": reward.value,
-            "reward_breakdown": reward.breakdown,
-            "reward_message": reward.message,
-            "done": done,
-            "cumulative_reward": info["cumulative_reward"],
-            "timestamp": time.time(),
-        }
-        print(json.dumps(step_log))
+            step_log = {
+                "event": "STEP",
+                "task_id": task_id,
+                "step": step_num,
+                "action": action.model_dump(),
+                "reward": reward.value,
+                "reward_breakdown": reward.breakdown,
+                "reward_message": reward.message,
+                "done": done,
+                "cumulative_reward": info["cumulative_reward"],
+                "timestamp": time.time(),
+            }
+            print(json.dumps(step_log))
+            sys.stdout.flush()
 
-        task_result["steps"].append(step_log)
-        task_result["total_reward"] += reward.value
+            task_result["steps"].append(step_log)
+            task_result["total_reward"] += reward.value
 
-        if done:
+            if done:
+                break
+
+        except Exception as e:
+            print(json.dumps({
+                "event": "STEP_ERROR",
+                "task_id": task_id,
+                "step": step_num,
+                "error": str(e),
+                "timestamp": time.time()
+            }))
+            sys.stdout.flush()
             break
 
-    # Final grade
-    final_score = env.grade()
+    try:
+        final_score = env.grade()
+    except Exception:
+        final_score = 0.0
+
     task_result["final_score"] = final_score
 
     print(json.dumps({
@@ -165,6 +216,7 @@ def run_task(task_id: str) -> dict:
         "final_score": final_score,
         "timestamp": time.time(),
     }))
+    sys.stdout.flush()
 
     return task_result
 
@@ -172,11 +224,20 @@ def run_task(task_id: str) -> dict:
 def main():
     all_results = []
     for task_id in TASKS:
-        result = run_task(task_id)
-        all_results.append(result)
-        time.sleep(1)  # Rate limit buffer
+        try:
+            result = run_task(task_id)
+            all_results.append(result)
+        except Exception as e:
+            print(json.dumps({
+                "event": "TASK_ERROR",
+                "task_id": task_id,
+                "error": str(e),
+                "timestamp": time.time()
+            }))
+            sys.stdout.flush()
+            all_results.append({"task_id": task_id, "final_score": 0.0})
+        time.sleep(1)
 
-    # Summary
     avg_score = sum(r["final_score"] for r in all_results) / len(all_results)
     print(json.dumps({
         "event": "SUMMARY",
@@ -184,6 +245,7 @@ def main():
         "average_score": round(avg_score, 4),
         "timestamp": time.time(),
     }))
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
