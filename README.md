@@ -1,5 +1,5 @@
 ---
-title: Customer Support Ticket Triage OpenEnv
+title: Customer Support  Ticket Triage OpenEnv
 emoji: 🎫
 colorFrom: blue
 colorTo: purple
